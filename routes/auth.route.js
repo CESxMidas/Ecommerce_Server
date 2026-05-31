@@ -5,6 +5,8 @@ import {
   getMe,
   googleLogin,
   login,
+  logout,
+  refreshTokens,
   register,
   resendVerification,
   resetPassword,
@@ -22,6 +24,8 @@ router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", optionalAuth, resetPassword);
 router.post("/verify", verifyAccount);
 router.post("/resend-verify", resendVerification);
+router.post("/refresh", refreshTokens);
+router.post("/logout", logout);
 router.get("/me", protect, getMe);
 
 export default router;

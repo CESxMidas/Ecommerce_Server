@@ -2,6 +2,19 @@ import { slugify } from "./slugify.js";
 
 const URL_PATTERN = /^https?:\/\/.+/i;
 const LOCAL_IMAGE_PATTERN = /^\/(images|assets)\/.+/i;
+const PRODUCT_TYPES = new Set([
+  "license_key",
+  "redeem_code",
+  "account",
+  "manual_service",
+  "hardware",
+]);
+const DELIVERY_TYPES = new Set([
+  "instant_key",
+  "account_credentials",
+  "manual_delivery",
+  "physical",
+]);
 
 export function isValidImageUrl(value) {
   if (typeof value !== "string") {
@@ -125,17 +138,23 @@ export function normalizeSeedProduct(raw, categoryMap = new Map()) {
       : finalThumbnail
         ? [finalThumbnail]
         : [];
+  const productType = PRODUCT_TYPES.has(raw.productType)
+    ? raw.productType
+    : "manual_service";
+  const deliveryType = normalizeDeliveryType(raw.deliveryType, productType);
 
   return {
     productId,
     name,
     slug: slugify(raw.slug || name || `product-${productId}`),
+    sku: String(raw.sku || `SKU-${productId}`).trim().toUpperCase(),
     description: String(
       raw.description ||
         `${name} — genuine digital license with instant email delivery.`,
     ).trim(),
     price,
     discountPrice,
+    currency: String(raw.currency || "USD").trim().toUpperCase(),
     images: finalImages,
     thumbnail: finalThumbnail,
     categoryId: Number.isNaN(categoryId) ? null : categoryId,
@@ -143,14 +162,58 @@ export function normalizeSeedProduct(raw, categoryMap = new Map()) {
       raw.categoryName || category?.name || "",
     ).trim(),
     vendor: String(raw.vendor || raw.brand || categoryNameFallback(raw)).trim(),
+    tags: Array.isArray(raw.tags)
+      ? raw.tags.map((tag) => String(tag).trim()).filter(Boolean)
+      : [],
+    attributes:
+      raw.attributes && typeof raw.attributes === "object"
+        ? raw.attributes
+        : {},
+    variants: Array.isArray(raw.variants) ? raw.variants : [],
     stock: Math.max(0, Number(raw.stock ?? 99) || 0),
     rating: clamp(Number(raw.rating ?? 4.5) || 4.5, 0, 5),
     reviewsCount: Math.max(0, Number(raw.reviewsCount ?? 0) || 0),
     badge: String(raw.badge || raw.tag || "").trim(),
-    productType: raw.productType === "license_key" ? "license_key" : "standard",
+    productType,
+    deliveryType,
+    requiresOnlinePayment:
+      raw.requiresOnlinePayment !== undefined
+        ? Boolean(raw.requiresOnlinePayment)
+        : deliveryType !== "physical",
     keyPrefix: String(raw.keyPrefix || "").trim().toUpperCase(),
+    weight: Math.max(0, Number(raw.weight ?? 0) || 0),
+    dimensions:
+      raw.dimensions && typeof raw.dimensions === "object"
+        ? {
+            length: Math.max(0, Number(raw.dimensions.length ?? 0) || 0),
+            width: Math.max(0, Number(raw.dimensions.width ?? 0) || 0),
+            height: Math.max(0, Number(raw.dimensions.height ?? 0) || 0),
+          }
+        : { length: 0, width: 0, height: 0 },
+    seoTitle: String(raw.seoTitle || name).trim(),
+    seoDescription: String(raw.seoDescription || raw.description || "").trim(),
     isActive: raw.isActive !== false,
   };
+}
+
+function normalizeDeliveryType(value, productType) {
+  if (DELIVERY_TYPES.has(value)) {
+    return value;
+  }
+
+  if (productType === "hardware") {
+    return "physical";
+  }
+
+  if (productType === "license_key" || productType === "redeem_code") {
+    return "instant_key";
+  }
+
+  if (productType === "account") {
+    return "account_credentials";
+  }
+
+  return "manual_delivery";
 }
 
 function categoryNameFallback(raw) {

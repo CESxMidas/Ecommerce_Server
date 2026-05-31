@@ -3,11 +3,13 @@ import mongoose from "mongoose";
 const orderProductSnapshotSchema = new mongoose.Schema(
   {
     id: mongoose.Schema.Types.Mixed,
+    sku: String,
     name: String,
     slug: String,
     description: String,
     price: Number,
     discountPrice: Number,
+    currency: String,
     images: [String],
     thumbnail: String,
     categoryId: String,
@@ -24,6 +26,11 @@ const orderProductSnapshotSchema = new mongoose.Schema(
     oldPrice: Number,
     tag: String,
     discount: String,
+    productType: String,
+    deliveryType: String,
+    requiresOnlinePayment: Boolean,
+    attributes: Object,
+    keyPrefix: String,
   },
   { _id: false },
 );
@@ -31,7 +38,12 @@ const orderProductSnapshotSchema = new mongoose.Schema(
 const orderItemSchema = new mongoose.Schema(
   {
     productId: Number,
+    sku: String,
     quantity: Number,
+    unitPrice: Number,
+    lineTotal: Number,
+    currency: { type: String, default: "USD" },
+    variant: { type: Object, default: null },
     product: orderProductSnapshotSchema,
     licenseKeys: { type: [String], default: [] },
   },
@@ -60,7 +72,26 @@ const orderSchema = new mongoose.Schema(
       default: "Pending",
     },
     paymentMethod: { type: String, default: "card" },
+    paymentStatus: {
+      type: String,
+      enum: ["paid", "pending", "awaiting_cod", "failed", "refunded"],
+      default: "pending", // ĐÃ SỬA: Nên để mặc định ban đầu tạo đơn là pending thay vì paid
+    },
+    paymentUrl: { type: String, default: "" },
+    subtotal: { type: Number, default: 0 },
+    discount: { type: Number, default: 0 },
+    couponCode: { type: String, default: "" },
+    tax: { type: Number, default: 0 },
+    shippingFee: { type: Number, default: 0 },
+    currency: { type: String, default: "USD" },
+    stockDeducted: { type: Boolean, default: false },
     items: [orderItemSchema],
+
+    // 🌟 THÊM TRƯỜNG NÀY ĐỂ KÍCH HOẠT TỰ ĐỘNG XÓA ĐƠN HÀNG
+    expiresAt: {
+      type: Date,
+      index: { expires: 0 },
+    },
   },
   { timestamps: true },
 );

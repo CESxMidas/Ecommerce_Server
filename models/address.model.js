@@ -2,6 +2,16 @@ import mongoose from "mongoose";
 
 const addressSchema = new mongoose.Schema(
   {
+    label: {
+      type: String,
+      default: "",
+    },
+
+    fullName: {
+      type: String,
+      default: "",
+    },
+
     address_line: {
       type: String,
       default: "",
@@ -30,6 +40,27 @@ const addressSchema = new mongoose.Schema(
     mobile: {
       type: String,
       default: "",
+    },
+
+    province: {
+      type: String,
+      default: "",
+    },
+
+    district: {
+      type: String,
+      default: "",
+    },
+
+    ward: {
+      type: String,
+      default: "",
+    },
+
+    isDefault: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
 
     status: {

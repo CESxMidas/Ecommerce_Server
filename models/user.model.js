@@ -23,7 +23,6 @@ const userSchema = new mongoose.Schema(
       type: String,
       unique: true,
       sparse: true,
-      default: null,
     },
 
     authProvider: {
@@ -41,6 +40,48 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+
+    phoneVerified: {
+      type: Boolean,
+      default: false,
+    },
+
+    dateOfBirth: {
+      type: Date,
+      default: null,
+    },
+
+    gender: {
+      type: String,
+      enum: ["", "male", "female", "other"],
+      default: "",
+    },
+
+    email_change_new: {
+      type: String,
+      default: null,
+    },
+
+    email_change_otp_hash: {
+      type: String,
+      default: null,
+    },
+
+    email_change_expiry: {
+      type: Date,
+      default: null,
+    },
+
+    lastPasswordChangeAt: {
+      type: Date,
+      default: null,
+    },
+
+    twoFactorEnabled: {
+      type: Boolean,
+      default: false,
+    },
+
     verify_email: {
       type: Boolean,
       default: false,

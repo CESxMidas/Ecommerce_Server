@@ -1,15 +1,18 @@
+// Giữ nguyên file này như cũ của bạn
 import { Router } from "express";
-
 import {
   createOrder,
   getOrderById,
   getOrders,
+  trackOrder,
   updateOrderStatus,
 } from "../controllers/order.controller.js";
 import { protect } from "../middleware/auth.middleware.js";
 import { adminOnly } from "../middleware/admin.middleware.js";
 
 const router = Router();
+
+router.post("/track", trackOrder);
 
 router.use(protect);
 

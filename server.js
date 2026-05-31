@@ -8,19 +8,22 @@ import helmet from "helmet";
 import { connectDatabase } from "./config/database.js";
 import { verifyEmailConnection } from "./utils/email.js";
 import { getGoogleClientIds } from "./utils/googleAuth.js";
-import { seedDatabase } from "./utils/seedData.js";
 import apiRoutes from "./routes/index.js";
 import { errorHandler, notFound } from "./middleware/error.middleware.js";
+import { apiRateLimiter } from "./middleware/rateLimit.middleware.js";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 888;
-const corsOrigin = process.env.CORS_ORIGIN || "http://localhost:5173";
+const corsOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 app.use(
   cors({
-    origin: corsOrigin,
+    origin: corsOrigins.length === 1 ? corsOrigins[0] : corsOrigins,
     credentials: true,
   }),
 );
@@ -41,22 +44,19 @@ app.get("/", (request, response) => {
   });
 });
 
-app.use("/api", apiRoutes);
+app.use("/api", apiRateLimiter, apiRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
 
 async function startServer() {
   await connectDatabase();
-  await seedDatabase();
   await verifyEmailConnection();
 
   const googleIds = getGoogleClientIds();
 
   if (googleIds.length > 0) {
-    console.log(
-      `[Google Auth] Client ID: ${googleIds[0].slice(0, 12)}...`,
-    );
+    console.log(`[Google Auth] Client ID: ${googleIds[0].slice(0, 12)}...`);
   } else {
     console.warn("[Google Auth] GOOGLE_CLIENT_ID chưa cấu hình");
   }

@@ -28,7 +28,11 @@ export async function generateUniqueLicenseKey(prefix) {
 }
 
 export async function generateLicenseKeysForProduct(product, quantity = 1) {
-  if (product?.productType !== "license_key" || !product?.keyPrefix) {
+  const canGenerateKey =
+    ["license_key", "redeem_code"].includes(product?.productType) &&
+    product?.deliveryType === "instant_key";
+
+  if (!canGenerateKey || !product?.keyPrefix) {
     return [];
   }
 
@@ -39,4 +43,34 @@ export async function generateLicenseKeysForProduct(product, quantity = 1) {
   }
 
   return keys;
+}
+
+export async function assignLicenseKeysToOrder(order) {
+  if (!order?.items?.length || order.paymentStatus !== "paid") {
+    return order;
+  }
+
+  let changed = false;
+
+  for (const item of order.items) {
+    if (item.licenseKeys?.length) {
+      continue;
+    }
+
+    const keys = await generateLicenseKeysForProduct(
+      item.product,
+      item.quantity,
+    );
+
+    if (keys.length > 0) {
+      item.licenseKeys = keys;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await order.save();
+  }
+
+  return order;
 }

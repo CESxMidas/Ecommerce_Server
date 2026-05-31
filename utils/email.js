@@ -128,6 +128,48 @@ export async function sendPasswordResetEmail({ to, name, otp }) {
   });
 }
 
+export async function sendEmailChangeVerificationEmail({ to, name, otp }) {
+  return sendMail({
+    to,
+    subject: "[E-commerce] Ma xac minh email moi",
+    text: `Xin chao ${name},\n\nMa xac minh email moi: ${otp}\n\nMa het han sau 15 phut.`,
+    html: buildOtpEmailHtml({
+      title: "Xac minh email moi",
+      name,
+      otp,
+      note: "Ma xac minh email moi cua ban la:",
+    }),
+  });
+}
+
+export async function sendLicenseKeysEmail({ to, name, orderId, keys }) {
+  const keyText = keys
+    .map((entry) => `${entry.productName}: ${entry.keys.join(", ")}`)
+    .join("\n");
+
+  const keyHtml = keys
+    .map(
+      (entry) =>
+        `<li><strong>${entry.productName}</strong>: <code>${entry.keys.join(
+          ", ",
+        )}</code></li>`,
+    )
+    .join("");
+
+  return sendMail({
+    to,
+    subject: `[E-commerce] License keys for order #${orderId}`,
+    text: `Xin chao ${name},\n\nLicense keys cua don #${orderId}:\n${keyText}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px;">
+        <h2 style="color: #1e293b;">License keys for order #${orderId}</h2>
+        <p style="color: #475569;">Xin chao <strong>${name}</strong>, day la license key da mua:</p>
+        <ul style="color: #0f172a; line-height: 1.8;">${keyHtml}</ul>
+      </div>
+    `,
+  });
+}
+
 export function assertEmailSent(mailResult) {
   if (!isEmailConfigured()) {
     throw new Error(

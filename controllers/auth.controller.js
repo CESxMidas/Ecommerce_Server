@@ -2,6 +2,11 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import UserModel from "../models/user.model.js";
 import { generateToken } from "../utils/generateToken.js";
+import {
+  issueRefreshToken,
+  revokeRefreshToken,
+  rotateRefreshToken,
+} from "../utils/refreshToken.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { formatAuthUser } from "../utils/formatters.js";
 import { ApiError, throwIfInvalid } from "../utils/apiError.js";
@@ -26,6 +31,39 @@ import {
 
 function createOtp() {
   return String(crypto.randomInt(100000, 999999));
+}
+
+function getSessionMetadata(request) {
+  return {
+    deviceName:
+      request.headers["x-device-name"] ||
+      request.headers["user-agent"]?.split(" ").slice(0, 3).join(" ") ||
+      "Browser",
+    ipAddress: request.ip || request.socket?.remoteAddress || "",
+    userAgent: request.headers["user-agent"] || "",
+  };
+}
+
+async function sendAuthResponse(user, request, response, statusCode = 200) {
+  const token = generateToken(user._id);
+  const refreshToken = await issueRefreshToken(
+    user._id,
+    getSessionMetadata(request),
+  );
+
+  const payload = {
+    ...formatAuthUser(user, token),
+    refreshToken,
+  };
+
+  response.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: Number(process.env.JWT_REFRESH_DAYS || 30) * 24 * 60 * 60 * 1000,
+  });
+
+  response.status(statusCode).json(payload);
 }
 
 async function saveOtpAndSendVerification(user, otp) {
@@ -164,13 +202,86 @@ export const login = asyncHandler(async (request, response) => {
     throw new ApiError(401, "Invalid email or password");
   }
 
+  if (user.authProvider === "local" && !user.verify_email) {
+    let emailSent = false;
+    let sendErrorMessage = "";
+
+    if (isEmailConfigured()) {
+      const verifyOtp = createOtp();
+
+      try {
+        await saveOtpAndSendVerification(user, verifyOtp);
+        emailSent = true;
+      } catch (error) {
+        sendErrorMessage =
+          error.message || "Khong gui duoc email xac minh";
+      }
+    } else {
+      sendErrorMessage = "Server chua cau hinh Gmail";
+    }
+
+    throw new ApiError(
+      403,
+      emailSent
+        ? "Vui lòng xác minh email trước khi đăng nhập. Mã xác minh mới đã được gửi tới Gmail."
+        : "Vui lòng xác minh email trước khi đăng nhập. Không gửi được mã mới, vui lòng bấm gửi lại mã.",
+      {
+        code: "EMAIL_NOT_VERIFIED",
+        email: user.email,
+        emailSent,
+        ...(sendErrorMessage ? { sendError: sendErrorMessage } : {}),
+      },
+    );
+  }
+
   user.last_login_date = new Date();
 
   await user.save();
 
-  const token = generateToken(user._id);
+  await sendAuthResponse(user, request, response);
+});
 
-  response.json(formatAuthUser(user, token));
+export const refreshTokens = asyncHandler(async (request, response) => {
+  const rawToken =
+    request.body.refreshToken || request.cookies?.refreshToken;
+
+  if (!rawToken) {
+    throw new ApiError(401, "Refresh token is required");
+  }
+
+  const rotated = await rotateRefreshToken(rawToken);
+
+  if (!rotated) {
+    throw new ApiError(401, "Invalid or expired refresh token");
+  }
+
+  const user = await UserModel.findById(rotated.userId);
+
+  if (!user || user.status !== "Active") {
+    throw new ApiError(401, "User not found");
+  }
+
+  response.cookie("refreshToken", rotated.refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: Number(process.env.JWT_REFRESH_DAYS || 30) * 24 * 60 * 60 * 1000,
+  });
+
+  response.json({
+    ...formatAuthUser(user, rotated.accessToken),
+    refreshToken: rotated.refreshToken,
+  });
+});
+
+export const logout = asyncHandler(async (request, response) => {
+  const rawToken =
+    request.body.refreshToken || request.cookies?.refreshToken;
+
+  await revokeRefreshToken(rawToken);
+
+  response.clearCookie("refreshToken");
+  response.json({ message: "Logged out successfully" });
 });
 
 export const forgotPassword = asyncHandler(async (request, response) => {
@@ -431,9 +542,7 @@ export const googleLogin = asyncHandler(async (request, response) => {
     });
   }
 
-  const token = generateToken(user._id);
-
-  response.json(formatAuthUser(user, token));
+  await sendAuthResponse(user, request, response);
 });
 
 export const getMe = asyncHandler(async (request, response) => {
@@ -453,5 +562,13 @@ export const getMe = asyncHandler(async (request, response) => {
     role: user.role,
 
     verify_email: user.verify_email,
+
+    phoneVerified: Boolean(user.phoneVerified),
+
+    dateOfBirth: user.dateOfBirth,
+
+    gender: user.gender || "",
+
+    twoFactorEnabled: Boolean(user.twoFactorEnabled),
   });
 });

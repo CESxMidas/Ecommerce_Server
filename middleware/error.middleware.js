@@ -18,5 +18,8 @@ export function errorHandler(error, request, response, next) {
     console.error(error);
   }
 
-  response.status(statusCode).json({ message });
+  response.status(statusCode).json({
+    message,
+    ...(error.details || {}),
+  });
 }

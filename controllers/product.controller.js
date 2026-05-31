@@ -5,6 +5,26 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { formatProduct, formatReview } from "../utils/formatters.js";
 import { ApiError } from "../utils/apiError.js";
 import { getCategoryIdsWithDescendants } from "../utils/categoryHelpers.js";
+import { syncProductReviewStats } from "../utils/reviewHelpers.js";
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildEffectivePriceExpression() {
+  return {
+    $cond: [
+      {
+        $and: [
+          { $ne: ["$discountPrice", null] },
+          { $lt: ["$discountPrice", "$price"] },
+        ],
+      },
+      "$discountPrice",
+      "$price",
+    ],
+  };
+}
 
 export const getProducts = asyncHandler(async (request, response) => {
   const filter = { isActive: true };
@@ -46,38 +66,65 @@ export const getProducts = asyncHandler(async (request, response) => {
     }
   }
 
-  let products = await ProductModel.find(filter).sort({
-    productId: 1,
-  });
-
   if (q) {
-    const query = String(q).trim().toLowerCase();
+    const query = escapeRegex(String(q).trim());
 
-    products = products.filter((product) => {
-      const haystack =
-        `${product.name} ${product.vendor} ${product.categoryName} ${product.description}`.toLowerCase();
-
-      return haystack.includes(query);
-    });
+    if (query) {
+      filter.$or = [
+        { name: { $regex: query, $options: "i" } },
+        { vendor: { $regex: query, $options: "i" } },
+        { categoryName: { $regex: query, $options: "i" } },
+        { description: { $regex: query, $options: "i" } },
+        { sku: { $regex: query, $options: "i" } },
+        { tags: { $regex: query, $options: "i" } },
+      ];
+    }
   }
 
   if (minPrice != null || maxPrice != null) {
     const min = Number(minPrice);
     const max = Number(maxPrice);
+    const priceExpression = buildEffectivePriceExpression();
+    const priceConditions = [];
 
-    products = products.filter((product) => {
-      const sale =
-        product.discountPrice != null &&
-        product.discountPrice < product.price
-          ? product.discountPrice
-          : product.price;
+    if (!Number.isNaN(min)) {
+      priceConditions.push({ $gte: [priceExpression, min] });
+    }
 
-      if (!Number.isNaN(min) && sale < min) return false;
-      if (!Number.isNaN(max) && sale > max) return false;
+    if (!Number.isNaN(max)) {
+      priceConditions.push({ $lte: [priceExpression, max] });
+    }
 
-      return true;
+    if (priceConditions.length > 0) {
+      filter.$expr =
+        priceConditions.length === 1
+          ? priceConditions[0]
+          : { $and: priceConditions };
+    }
+  }
+
+  const page = Number(request.query.page);
+  const limit = Number(request.query.limit) || 12;
+  const sort = { productId: 1 };
+
+  if (!Number.isNaN(page) && page >= 1) {
+    const total = await ProductModel.countDocuments(filter);
+    const start = (page - 1) * limit;
+    const paged = await ProductModel.find(filter)
+      .sort(sort)
+      .skip(start)
+      .limit(limit);
+
+    return response.json({
+      items: paged.map(formatProduct),
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   }
+
+  const products = await ProductModel.find(filter).sort(sort);
 
   response.json(products.map(formatProduct));
 });
@@ -158,9 +205,23 @@ export const getProductReviews = asyncHandler(async (request, response) => {
 export const createProductReview = asyncHandler(async (request, response) => {
   const productId = Number(request.params.id);
   const { rating, comment } = request.body;
+  const normalizedRating = Number(rating);
+  const normalizedComment = String(comment || "").trim();
 
-  if (!rating || rating < 1 || rating > 5) {
+  if (
+    !Number.isInteger(normalizedRating) ||
+    normalizedRating < 1 ||
+    normalizedRating > 5
+  ) {
     throw new ApiError(400, "Rating must be between 1 and 5");
+  }
+
+  if (!normalizedComment) {
+    throw new ApiError(400, "Review comment is required");
+  }
+
+  if (normalizedComment.length > 500) {
+    throw new ApiError(400, "Review must be 500 characters or less");
   }
 
   const product = await ProductModel.findOne({ productId, isActive: true });
@@ -174,12 +235,14 @@ export const createProductReview = asyncHandler(async (request, response) => {
     {
       productId,
       user: request.user._id,
-      userName: request.user.name,
-      rating,
-      comment: comment || "",
+      userName: request.user.name || request.user.email,
+      rating: normalizedRating,
+      comment: normalizedComment,
     },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
+
+  await syncProductReviewStats(productId);
 
   response.status(201).json(formatReview(review));
 });

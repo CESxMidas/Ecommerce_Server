@@ -1,6 +1,27 @@
 import ProductModel from "../models/product.model.js";
 import CartModel from "../models/cart.model.js";
+import { ApiError } from "./apiError.js";
 import { formatProduct } from "./formatters.js";
+import { resolvePurchaseVariant } from "./productVariants.js";
+
+export function assertSufficientStock(product, quantity) {
+  const requested = Number(quantity);
+
+  if (!product) {
+    throw new ApiError(404, "Product not found");
+  }
+
+  if (requested < 1 || !Number.isInteger(requested)) {
+    throw new ApiError(400, "Quantity must be at least 1");
+  }
+
+  if (product.stock < requested) {
+    throw new ApiError(
+      400,
+      `Insufficient stock for "${product.name}" (available: ${product.stock})`,
+    );
+  }
+}
 
 export async function getOrCreateCart(userId) {
   let cart = await CartModel.findOne({ user: userId });
@@ -38,6 +59,7 @@ export async function enrichCartItems(items) {
       return {
         productId: item.productId,
         quantity: item.quantity,
+        variant: resolvePurchaseVariant(product, item.variant),
         product: formatProduct(product),
       };
     })
