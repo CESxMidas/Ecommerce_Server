@@ -6,6 +6,19 @@ function normalizeAppPassword(password) {
   return String(password).replace(/\s/g, "");
 }
 
+function getEmailFrom() {
+  return (
+    process.env.EMAIL_FROM?.trim() ||
+    (process.env.GMAIL_USER?.trim()
+      ? `"E-commerce Shop" <${process.env.GMAIL_USER.trim()}>`
+      : "E-commerce Shop <onboarding@resend.dev>")
+  );
+}
+
+function isResendConfigured() {
+  return Boolean(process.env.RESEND_API_KEY?.trim());
+}
+
 function getTransporter() {
   const user = process.env.GMAIL_USER?.trim();
   const pass = normalizeAppPassword(process.env.GMAIL_APP_PASSWORD || "");
@@ -34,13 +47,22 @@ function getTransporter() {
 }
 
 export function isEmailConfigured() {
-  return Boolean(
-    process.env.GMAIL_USER?.trim() &&
-      normalizeAppPassword(process.env.GMAIL_APP_PASSWORD || ""),
+  return (
+    isResendConfigured() ||
+    Boolean(
+      process.env.GMAIL_USER?.trim() &&
+        normalizeAppPassword(process.env.GMAIL_APP_PASSWORD || ""),
+    )
   );
 }
 
 export async function verifyEmailConnection() {
+  if (isResendConfigured()) {
+    console.log(`[Email] Resend API configured (${getEmailFrom()})`);
+
+    return true;
+  }
+
   const transport = getTransporter();
 
   if (!transport) {
@@ -64,7 +86,44 @@ export async function verifyEmailConnection() {
   }
 }
 
+async function sendWithResend({ to, subject, html, text }) {
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY.trim()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: getEmailFrom(),
+      to,
+      subject,
+      html,
+      text,
+    }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data?.message || data?.error || "Resend API failed");
+  }
+
+  return data;
+}
+
 async function sendMail({ to, subject, html, text }) {
+  if (isResendConfigured()) {
+    try {
+      await sendWithResend({ to, subject, html, text });
+
+      return { sent: true };
+    } catch (error) {
+      console.error("Email send failed:", error.message);
+
+      return { sent: false, reason: error.message };
+    }
+  }
+
   const transport = getTransporter();
 
   if (!transport) {
@@ -73,7 +132,7 @@ async function sendMail({ to, subject, html, text }) {
 
   try {
     await transport.sendMail({
-      from: `"E-commerce Shop" <${process.env.GMAIL_USER.trim()}>`,
+      from: getEmailFrom(),
       to,
       subject,
       html,
