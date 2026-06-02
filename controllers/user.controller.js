@@ -13,7 +13,11 @@ import {
   formatOrder,
   formatProfile,
 } from "../utils/formatters.js";
-import { ApiError } from "../utils/apiError.js";
+import { ApiError, throwIfInvalid } from "../utils/apiError.js";
+import {
+  validateAddressPayload,
+  validateProfilePayload,
+} from "../validators/schema.validator.js";
 import {
   assertEmailSent,
   isEmailConfigured,
@@ -47,6 +51,8 @@ export const getProfile = asyncHandler(async (request, response) => {
 });
 
 export const updateProfile = asyncHandler(async (request, response) => {
+  throwIfInvalid(validateProfilePayload(request.body));
+
   const { name, phone, avatar, dateOfBirth, gender } = request.body;
   const user = request.user;
 
@@ -207,6 +213,8 @@ export const getAddresses = asyncHandler(async (request, response) => {
 });
 
 export const createAddress = asyncHandler(async (request, response) => {
+  throwIfInvalid(validateAddressPayload(request.body));
+
   const {
     label,
     fullName,
@@ -258,6 +266,8 @@ export const createAddress = asyncHandler(async (request, response) => {
 });
 
 export const updateAddress = asyncHandler(async (request, response) => {
+  throwIfInvalid(validateAddressPayload(request.body, { partial: true }));
+
   const updates = { ...request.body };
 
   if (updates.isDefault === true) {

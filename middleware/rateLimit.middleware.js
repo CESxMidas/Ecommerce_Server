@@ -13,5 +13,6 @@ export const authRateLimiter = rateLimit({
   max: Number(process.env.AUTH_RATE_LIMIT_MAX || 30),
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true,
   message: { message: "Too many auth attempts, please try again later" },
 });

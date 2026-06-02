@@ -12,12 +12,14 @@ export function buildLicenseKey(prefix) {
   return `${normalizedPrefix}-${randomFiveDigits()}`;
 }
 
-export async function generateUniqueLicenseKey(prefix) {
+export async function generateUniqueLicenseKey(prefix, session = null) {
   const maxAttempts = 12;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const key = buildLicenseKey(prefix);
-    const exists = await OrderModel.exists({ "items.licenseKeys": key });
+    const exists = await OrderModel.exists({ "items.licenseKeys": key }).session(
+      session,
+    );
 
     if (!exists) {
       return key;
@@ -27,7 +29,11 @@ export async function generateUniqueLicenseKey(prefix) {
   return `${String(prefix).toUpperCase()}-${Date.now().toString().slice(-5)}`;
 }
 
-export async function generateLicenseKeysForProduct(product, quantity = 1) {
+export async function generateLicenseKeysForProduct(
+  product,
+  quantity = 1,
+  session = null,
+) {
   const canGenerateKey =
     ["license_key", "redeem_code"].includes(product?.productType) &&
     product?.deliveryType === "instant_key";
@@ -39,13 +45,13 @@ export async function generateLicenseKeysForProduct(product, quantity = 1) {
   const keys = [];
 
   for (let index = 0; index < quantity; index += 1) {
-    keys.push(await generateUniqueLicenseKey(product.keyPrefix));
+    keys.push(await generateUniqueLicenseKey(product.keyPrefix, session));
   }
 
   return keys;
 }
 
-export async function assignLicenseKeysToOrder(order) {
+export async function assignLicenseKeysToOrder(order, session = null) {
   if (!order?.items?.length || order.paymentStatus !== "paid") {
     return order;
   }
@@ -60,6 +66,7 @@ export async function assignLicenseKeysToOrder(order) {
     const keys = await generateLicenseKeysForProduct(
       item.product,
       item.quantity,
+      session,
     );
 
     if (keys.length > 0) {
@@ -69,7 +76,7 @@ export async function assignLicenseKeysToOrder(order) {
   }
 
   if (changed) {
-    await order.save();
+    await order.save({ session });
   }
 
   return order;

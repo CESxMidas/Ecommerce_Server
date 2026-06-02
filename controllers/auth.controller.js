@@ -7,6 +7,11 @@ import {
   revokeRefreshToken,
   rotateRefreshToken,
 } from "../utils/refreshToken.js";
+import {
+  assertCsrf,
+  clearCsrfCookie,
+  setCsrfCookie,
+} from "../utils/csrf.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { formatAuthUser } from "../utils/formatters.js";
 import { ApiError, throwIfInvalid } from "../utils/apiError.js";
@@ -53,7 +58,6 @@ async function sendAuthResponse(user, request, response, statusCode = 200) {
 
   const payload = {
     ...formatAuthUser(user, token),
-    refreshToken,
   };
 
   response.cookie("refreshToken", refreshToken, {
@@ -62,6 +66,7 @@ async function sendAuthResponse(user, request, response, statusCode = 200) {
     sameSite: "lax",
     maxAge: Number(process.env.JWT_REFRESH_DAYS || 30) * 24 * 60 * 60 * 1000,
   });
+  setCsrfCookie(response);
 
   response.status(statusCode).json(payload);
 }
@@ -242,6 +247,10 @@ export const login = asyncHandler(async (request, response) => {
 });
 
 export const refreshTokens = asyncHandler(async (request, response) => {
+  if (request.cookies?.refreshToken) {
+    assertCsrf(request);
+  }
+
   const rawToken =
     request.body.refreshToken || request.cookies?.refreshToken;
 
@@ -267,20 +276,25 @@ export const refreshTokens = asyncHandler(async (request, response) => {
     sameSite: "lax",
     maxAge: Number(process.env.JWT_REFRESH_DAYS || 30) * 24 * 60 * 60 * 1000,
   });
+  setCsrfCookie(response);
 
   response.json({
     ...formatAuthUser(user, rotated.accessToken),
-    refreshToken: rotated.refreshToken,
   });
 });
 
 export const logout = asyncHandler(async (request, response) => {
+  if (request.cookies?.refreshToken) {
+    assertCsrf(request);
+  }
+
   const rawToken =
     request.body.refreshToken || request.cookies?.refreshToken;
 
   await revokeRefreshToken(rawToken);
 
   response.clearCookie("refreshToken");
+  clearCsrfCookie(response);
   response.json({ message: "Logged out successfully" });
 });
 

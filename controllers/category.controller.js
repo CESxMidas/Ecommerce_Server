@@ -2,7 +2,8 @@ import CategoryModel from "../models/category.model.js";
 import ProductModel from "../models/product.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { formatCategory, formatProduct } from "../utils/formatters.js";
-import { ApiError } from "../utils/apiError.js";
+import { ApiError, throwIfInvalid } from "../utils/apiError.js";
+import { validateCategoryPayload } from "../validators/schema.validator.js";
 import {
   buildCategoryTreeFromDb,
   getCategoryIdsWithDescendants,
@@ -78,6 +79,8 @@ export const getCategoryById = asyncHandler(async (request, response) => {
 });
 
 export const createCategory = asyncHandler(async (request, response) => {
+  throwIfInvalid(validateCategoryPayload(request.body));
+
   const { name, image } = request.body;
 
   if (!name?.trim()) {
@@ -102,6 +105,8 @@ export const createCategory = asyncHandler(async (request, response) => {
 });
 
 export const updateCategory = asyncHandler(async (request, response) => {
+  throwIfInvalid(validateCategoryPayload(request.body, { partial: true }));
+
   const categoryId = Number(request.params.id);
 
   const category = await CategoryModel.findOneAndUpdate(

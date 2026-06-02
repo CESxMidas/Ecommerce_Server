@@ -11,6 +11,16 @@ import { buildCategoryMap, normalizeSeedCategory, normalizeSeedProduct } from ".
 
 dotenv.config();
 
+function assertSeedAllowed() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Refusing to seed catalog in production");
+  }
+
+  if (!process.argv.includes("--yes")) {
+    throw new Error("Refusing to reset catalog without --yes");
+  }
+}
+
 const categories = [
   {
     id: 1,
@@ -308,6 +318,29 @@ const products = [
     images: [
       "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?q=80&w=1200&auto=format&fit=crop",
     ],
+    variants: [
+      {
+        id: "space-gray",
+        name: "Space Gray",
+        price: 429,
+        listPrice: 499,
+        color: "#4b5563",
+      },
+      {
+        id: "silver",
+        name: "Silver",
+        price: 429,
+        listPrice: 499,
+        color: "#d1d5db",
+      },
+      {
+        id: "midnight",
+        name: "Midnight",
+        price: 449,
+        listPrice: 519,
+        color: "#111827",
+      },
+    ],
     weight: 1.3,
     dimensions: { length: 30, width: 21, height: 2 },
   },
@@ -330,6 +363,29 @@ const products = [
     images: [
       "https://images.unsplash.com/photo-1597872200969-2b65d56bd16b?q=80&w=1200&auto=format&fit=crop",
     ],
+    variants: [
+      {
+        id: "black",
+        name: "Black",
+        price: 69,
+        listPrice: 89,
+        color: "#111827",
+      },
+      {
+        id: "blue",
+        name: "Blue",
+        price: 72,
+        listPrice: 92,
+        color: "#2563eb",
+      },
+      {
+        id: "silver",
+        name: "Silver",
+        price: 75,
+        listPrice: 95,
+        color: "#d1d5db",
+      },
+    ],
     weight: 0.08,
   },
   {
@@ -350,6 +406,29 @@ const products = [
     reviewsCount: 13,
     images: [
       "https://images.unsplash.com/photo-1587829741301-dc798b83add3?q=80&w=1200&auto=format&fit=crop",
+    ],
+    variants: [
+      {
+        id: "black",
+        name: "Black",
+        price: 59,
+        listPrice: 79,
+        color: "#111827",
+      },
+      {
+        id: "white",
+        name: "White",
+        price: 59,
+        listPrice: 79,
+        color: "#f8fafc",
+      },
+      {
+        id: "pink",
+        name: "Pink",
+        price: 64,
+        listPrice: 84,
+        color: "#f9a8d4",
+      },
     ],
     weight: 0.7,
   },
@@ -444,6 +523,8 @@ async function resetCollections() {
 }
 
 async function seed() {
+  assertSeedAllowed();
+
   if (!process.env.MONGODB_URL) {
     throw new Error("MONGODB_URL is required");
   }

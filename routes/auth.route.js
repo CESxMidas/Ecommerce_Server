@@ -14,16 +14,17 @@ import {
 } from "../controllers/auth.controller.js";
 import { protect } from "../middleware/auth.middleware.js";
 import { optionalAuth } from "../middleware/optionalAuth.middleware.js";
+import { authRateLimiter } from "../middleware/rateLimit.middleware.js";
 
 const router = Router();
 
-router.post("/register", register);
-router.post("/login", login);
-router.post("/google", googleLogin);
-router.post("/forgot-password", forgotPassword);
-router.post("/reset-password", optionalAuth, resetPassword);
-router.post("/verify", verifyAccount);
-router.post("/resend-verify", resendVerification);
+router.post("/register", authRateLimiter, register);
+router.post("/login", authRateLimiter, login);
+router.post("/google", authRateLimiter, googleLogin);
+router.post("/forgot-password", authRateLimiter, forgotPassword);
+router.post("/reset-password", authRateLimiter, optionalAuth, resetPassword);
+router.post("/verify", authRateLimiter, verifyAccount);
+router.post("/resend-verify", authRateLimiter, resendVerification);
 router.post("/refresh", refreshTokens);
 router.post("/logout", logout);
 router.get("/me", protect, getMe);

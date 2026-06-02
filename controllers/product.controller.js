@@ -1,11 +1,13 @@
 import ProductModel from "../models/product.model.js";
 import CategoryModel from "../models/category.model.js";
 import ReviewModel from "../models/review.model.js";
+import OrderModel from "../models/order.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { formatProduct, formatReview } from "../utils/formatters.js";
-import { ApiError } from "../utils/apiError.js";
+import { ApiError, throwIfInvalid } from "../utils/apiError.js";
 import { getCategoryIdsWithDescendants } from "../utils/categoryHelpers.js";
 import { syncProductReviewStats } from "../utils/reviewHelpers.js";
+import { validateProductPayload } from "../validators/schema.validator.js";
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -24,6 +26,30 @@ function buildEffectivePriceExpression() {
       "$price",
     ],
   };
+}
+
+function getProductSort(sortKey = "") {
+  const sorts = {
+    price_asc: { effectivePrice: 1, productId: 1 },
+    "price-asc": { effectivePrice: 1, productId: 1 },
+    price_desc: { effectivePrice: -1, productId: 1 },
+    "price-desc": { effectivePrice: -1, productId: 1 },
+    latest: { createdAt: -1, productId: -1 },
+    rating: { rating: -1, reviewsCount: -1, productId: 1 },
+    popular: { rating: -1, reviewsCount: -1, productId: 1 },
+  };
+
+  return sorts[String(sortKey || "").trim()] || { productId: 1 };
+}
+
+function parsePositiveInt(value, fallback, max = 100) {
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.min(parsed, max);
 }
 
 export const getProducts = asyncHandler(async (request, response) => {
@@ -50,7 +76,16 @@ export const getProducts = asyncHandler(async (request, response) => {
     }
   }
 
-  const { slug, q, minPrice, maxPrice } = request.query;
+  const {
+    slug,
+    q,
+    minPrice,
+    maxPrice,
+    vendor,
+    brand,
+    productType,
+    deliveryType,
+  } = request.query;
 
   if (slug) {
     const bySlug = await CategoryModel.findOne({
@@ -103,17 +138,43 @@ export const getProducts = asyncHandler(async (request, response) => {
     }
   }
 
-  const page = Number(request.query.page);
-  const limit = Number(request.query.limit) || 12;
-  const sort = { productId: 1 };
+  if (vendor || brand) {
+    filter.vendor = {
+      $regex: escapeRegex(String(vendor || brand).trim()),
+      $options: "i",
+    };
+  }
 
-  if (!Number.isNaN(page) && page >= 1) {
-    const total = await ProductModel.countDocuments(filter);
+  if (productType) {
+    filter.productType = String(productType).trim();
+  }
+
+  if (deliveryType) {
+    filter.deliveryType = String(deliveryType).trim();
+  }
+
+  const hasPage = request.query.page != null;
+  const page = parsePositiveInt(request.query.page, 1);
+  const limit = parsePositiveInt(request.query.limit, 12);
+  const sort = getProductSort(request.query.sort);
+  const pipeline = [
+    { $match: filter },
+    { $addFields: { effectivePrice: buildEffectivePriceExpression() } },
+    { $sort: sort },
+  ];
+
+  if (hasPage) {
+    const countRows = await ProductModel.aggregate([
+      { $match: filter },
+      { $count: "total" },
+    ]);
+    const total = countRows[0]?.total || 0;
     const start = (page - 1) * limit;
-    const paged = await ProductModel.find(filter)
-      .sort(sort)
-      .skip(start)
-      .limit(limit);
+    const paged = await ProductModel.aggregate([
+      ...pipeline,
+      { $skip: start },
+      { $limit: limit },
+    ]);
 
     return response.json({
       items: paged.map(formatProduct),
@@ -124,7 +185,7 @@ export const getProducts = asyncHandler(async (request, response) => {
     });
   }
 
-  const products = await ProductModel.find(filter).sort(sort);
+  const products = await ProductModel.aggregate(pipeline);
 
   response.json(products.map(formatProduct));
 });
@@ -149,6 +210,8 @@ export const getProductById = asyncHandler(async (request, response) => {
 });
 
 export const createProduct = asyncHandler(async (request, response) => {
+  throwIfInvalid(validateProductPayload(request.body));
+
   const lastProduct = await ProductModel.findOne().sort({ productId: -1 });
   const nextId = (lastProduct?.productId || 0) + 1;
 
@@ -161,6 +224,8 @@ export const createProduct = asyncHandler(async (request, response) => {
 });
 
 export const updateProduct = asyncHandler(async (request, response) => {
+  throwIfInvalid(validateProductPayload(request.body, { partial: true }));
+
   const productId = Number(request.params.id);
 
   const product = await ProductModel.findOneAndUpdate(
@@ -230,6 +295,19 @@ export const createProductReview = asyncHandler(async (request, response) => {
     throw new ApiError(404, "Product not found");
   }
 
+  const hasPurchased = await OrderModel.exists({
+    email: request.user.email,
+    paymentStatus: "paid",
+    "items.productId": productId,
+  });
+
+  if (!hasPurchased) {
+    throw new ApiError(
+      403,
+      "Only verified buyers can review this product",
+    );
+  }
+
   const review = await ReviewModel.findOneAndUpdate(
     { productId, user: request.user._id },
     {
@@ -238,6 +316,7 @@ export const createProductReview = asyncHandler(async (request, response) => {
       userName: request.user.name || request.user.email,
       rating: normalizedRating,
       comment: normalizedComment,
+      verifiedPurchase: true,
     },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );

@@ -1,7 +1,8 @@
 import CouponModel from "../models/coupon.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { validateCoupon } from "../utils/couponHelpers.js";
-import { ApiError } from "../utils/apiError.js";
+import { ApiError, throwIfInvalid } from "../utils/apiError.js";
+import { validateCouponPayload } from "../validators/schema.validator.js";
 
 export const validateCouponCode = asyncHandler(async (request, response) => {
   const { code, subtotal } = request.body;
@@ -24,6 +25,8 @@ export const getCoupons = asyncHandler(async (request, response) => {
 });
 
 export const createCoupon = asyncHandler(async (request, response) => {
+  throwIfInvalid(validateCouponPayload(request.body));
+
   const { code, type, value, minOrder, maxDiscount, usageLimit, expiresAt } =
     request.body;
 
@@ -45,6 +48,8 @@ export const createCoupon = asyncHandler(async (request, response) => {
 });
 
 export const updateCoupon = asyncHandler(async (request, response) => {
+  throwIfInvalid(validateCouponPayload(request.body, { partial: true }));
+
   const coupon = await CouponModel.findByIdAndUpdate(
     request.params.id,
     request.body,

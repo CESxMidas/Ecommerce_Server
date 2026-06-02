@@ -8,7 +8,10 @@ const DIGITAL_PRODUCT_TYPES = new Set([
 ]);
 
 export function isVariantProduct(product) {
-  return DIGITAL_PRODUCT_TYPES.has(product?.productType);
+  return (
+    (Array.isArray(product?.variants) && product.variants.length > 0) ||
+    DIGITAL_PRODUCT_TYPES.has(product?.productType)
+  );
 }
 
 function normalizeVariant(raw, fallbackPrice) {
@@ -16,6 +19,7 @@ function normalizeVariant(raw, fallbackPrice) {
   const name = String(raw?.name || raw?.label || id).trim();
   const price = Number(raw?.price ?? raw?.salePrice ?? fallbackPrice);
   const listPrice = raw?.listPrice != null ? Number(raw.listPrice) : null;
+  const color = raw?.color ? String(raw.color).trim() : "";
 
   if (!id || !name || Number.isNaN(price) || price < 0) {
     return null;
@@ -27,6 +31,7 @@ function normalizeVariant(raw, fallbackPrice) {
     price,
     listPrice: listPrice != null && !Number.isNaN(listPrice) ? listPrice : null,
     duration: raw?.duration || id,
+    color: color || null,
   };
 }
 
@@ -45,6 +50,10 @@ export function getPurchaseVariants(product) {
 
   if (customVariants.length > 0) {
     return customVariants;
+  }
+
+  if (product?.productType === "hardware" || product?.deliveryType === "physical") {
+    return [];
   }
 
   return [

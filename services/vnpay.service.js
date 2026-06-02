@@ -1,8 +1,5 @@
 import crypto from "crypto";
 
-/* ========================= */
-/* SORT OBJECT */
-/* ========================= */
 function sortObject(obj) {
   return Object.keys(obj)
     .sort()
@@ -12,26 +9,48 @@ function sortObject(obj) {
     }, {});
 }
 
-/* ========================= */
-/* CREATE VNPay URL */
-/* ========================= */
-export function createVNPayUrl({ orderId, amount }) {
+function encodeVnpayValue(value) {
+  return encodeURIComponent(String(value)).replace(/%20/g, "+");
+}
+
+function buildSignData(params) {
+  return Object.keys(params)
+    .map((key) => `${encodeVnpayValue(key)}=${encodeVnpayValue(params[key])}`)
+    .join("&");
+}
+
+export function getVnpayExchangeRate() {
+  const configuredRate = Number(process.env.VNPAY_EXCHANGE_RATE);
+
+  return Number.isFinite(configuredRate) && configuredRate > 0
+    ? configuredRate
+    : 25000;
+}
+
+export function toVnpayAmount(amount) {
+  return Math.round(Number(amount || 0) * getVnpayExchangeRate() * 100);
+}
+
+export function createVNPayUrl({ orderId, amount, clientIp = "127.0.0.1" }) {
   const tmnCode = process.env.VNPAY_TMN_CODE;
   const secret = process.env.VNPAY_HASH_SECRET;
+  const paymentUrl =
+    process.env.VNPAY_PAYMENT_URL ||
+    "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html";
 
-  // 1. Quy đổi từ tiền USD sang VND (Ví dụ: 12 * 25000 = 300000)
-  const amountInVnd = Math.round(amount * 25000);
+  if (!tmnCode || !secret) {
+    throw new Error("VNPay credentials are not configured");
+  }
 
-  const vnp_Params = {
-    // 2. BẮT BUỘC: Lấy số tiền VND nhân tiếp với 100 theo đúng tài liệu VNPay
-    vnp_Amount: Math.round(amountInVnd * 100),
+  const vnpParams = {
+    vnp_Amount: toVnpayAmount(amount),
     vnp_Command: "pay",
     vnp_CreateDate: new Date()
       .toISOString()
       .replace(/[-:TZ.]/g, "")
       .slice(0, 14),
     vnp_CurrCode: "VND",
-    vnp_IpAddr: "127.0.0.1",
+    vnp_IpAddr: clientIp,
     vnp_Locale: "vn",
     vnp_OrderInfo: `Thanh toan don hang ${orderId}`,
     vnp_OrderType: "billpayment",
@@ -41,64 +60,34 @@ export function createVNPayUrl({ orderId, amount }) {
     vnp_Version: "2.1.0",
   };
 
-  // 1. Sắp xếp tham số theo alphabet
-  const sorted = sortObject(vnp_Params);
-
-  // 2. Mã hóa đúng chuẩn VNPay
-  const signData = Object.keys(sorted)
-    .map((key) => {
-      const encodedKey = encodeURIComponent(key).replace(/%20/g, "+");
-      const encodedValue = encodeURIComponent(String(sorted[key])).replace(
-        /%20/g,
-        "+",
-      );
-      return `${encodedKey}=${encodedValue}`;
-    })
-    .join("&");
-
-  // 3. Tạo chữ ký bảo mật
+  const sorted = sortObject(vnpParams);
   const secureHash = crypto
     .createHmac("sha512", secret)
-    .update(signData, "utf-8")
+    .update(buildSignData(sorted), "utf-8")
     .digest("hex");
 
-  // 4. Tạo URL gửi đi
   const query = new URLSearchParams(sorted);
   query.append("vnp_SecureHash", secureHash);
 
-  return `https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?${query.toString()}`;
+  return `${paymentUrl}?${query.toString()}`;
 }
 
-/* ========================= */
-/* VERIFY VNPay */
-/* ========================= */
 export function verifyVNPay(query) {
   const secret = process.env.VNPAY_HASH_SECRET;
+
+  if (!secret) {
+    return false;
+  }
 
   const data = { ...query };
   const secureHash = data.vnp_SecureHash;
 
-  // Xóa các tham số mã hóa ra khỏi dữ liệu băm ngược
   delete data.vnp_SecureHash;
   delete data.vnp_SecureHashType;
 
-  const sorted = sortObject(data);
-
-  // Áp dụng logic mã hóa tương tự lúc gửi đi để kiểm tra tính toàn vẹn
-  const signData = Object.keys(sorted)
-    .map((key) => {
-      const encodedKey = encodeURIComponent(key).replace(/%20/g, "+");
-      const encodedValue = encodeURIComponent(String(sorted[key])).replace(
-        /%20/g,
-        "+",
-      );
-      return `${encodedKey}=${encodedValue}`;
-    })
-    .join("&");
-
   const hash = crypto
     .createHmac("sha512", secret)
-    .update(signData, "utf-8")
+    .update(buildSignData(sortObject(data)), "utf-8")
     .digest("hex");
 
   return hash === secureHash;

@@ -1,42 +1,32 @@
+import mongoose from "mongoose";
+
 import PaymentModel from "../models/payment.model.js";
 import OrderModel from "../models/order.model.js";
-import ProductModel from "../models/product.model.js";
+import CartModel from "../models/cart.model.js";
 import { createVNPayUrl } from "./vnpay.service.js";
 import { assignLicenseKeysToOrder } from "../utils/licenseKey.js";
-
-async function decrementOrderStockOnce(order) {
-  if (!order || order.stockDeducted) {
-    return;
-  }
-
-  for (const item of order.items || []) {
-    const updated = await ProductModel.findOneAndUpdate(
-      {
-        productId: item.productId,
-        stock: { $gte: item.quantity },
-      },
-      { $inc: { stock: -item.quantity } },
-      { new: true },
-    );
-
-    if (!updated) {
-      throw new Error(`Stock failed for product ${item.productId}`);
-    }
-  }
-
-  order.stockDeducted = true;
-  await order.save();
-}
+import {
+  ORDER_STATUS,
+  PAYMENT_STATUS,
+  decrementOrderStockOnce,
+  markOrderCouponUsedOnce,
+} from "../utils/orderLifecycle.js";
 
 function resolveInitialPaymentStatus(provider) {
   if (provider === "cod") {
-    return "awaiting_cod";
+    return PAYMENT_STATUS.AWAITING_COD;
   }
 
-  return "pending";
+  return PAYMENT_STATUS.PENDING;
 }
 
-export async function createPayment({ orderId, amount, provider }) {
+export async function createPayment({
+  orderId,
+  amount,
+  provider,
+  clientIp,
+  session = null,
+}) {
   const paymentId = `PAY-${Date.now()}-${Math.random()
     .toString(36)
     .slice(2, 8)
@@ -45,7 +35,7 @@ export async function createPayment({ orderId, amount, provider }) {
   let paymentUrl = null;
 
   if (provider === "vnpay") {
-    paymentUrl = createVNPayUrl({ orderId, amount });
+    paymentUrl = createVNPayUrl({ orderId, amount, clientIp });
   }
 
   const expiresAt =
@@ -53,14 +43,19 @@ export async function createPayment({ orderId, amount, provider }) {
       ? new Date(Date.now() + 5 * 60 * 1000)
       : undefined;
 
-  const payment = await PaymentModel.create({
-    paymentId,
-    orderId,
-    provider,
-    amount,
-    status: initialStatus,
-    expiresAt,
-  });
+  const [payment] = await PaymentModel.create(
+    [
+      {
+        paymentId,
+        orderId,
+        provider,
+        amount,
+        status: initialStatus,
+        expiresAt,
+      },
+    ],
+    { session },
+  );
 
   return {
     payment,
@@ -71,27 +66,55 @@ export async function createPayment({ orderId, amount, provider }) {
 }
 
 export async function markPaymentPaid({ orderId, transactionId, raw }) {
-  const payment = await PaymentModel.findOne({ orderId });
+  const session = await mongoose.startSession();
+  let paidPayment = null;
 
-  if (!payment) return null;
+  try {
+    await session.withTransaction(async () => {
+      const payment = await PaymentModel.findOne({ orderId }).session(session);
 
-  payment.status = "paid";
-  payment.transactionId = transactionId || "";
-  payment.rawResponse = raw || {};
-  payment.expiresAt = undefined;
-  await payment.save();
+      if (!payment) {
+        paidPayment = null;
+        return;
+      }
 
-  const order = await OrderModel.findOne({ orderId });
+      if (payment.status === PAYMENT_STATUS.PAID) {
+        paidPayment = payment;
+        return;
+      }
 
-  if (order) {
-    await decrementOrderStockOnce(order);
+      payment.status = PAYMENT_STATUS.PAID;
+      payment.transactionId = transactionId || "";
+      payment.rawResponse = raw || {};
+      payment.expiresAt = undefined;
+      await payment.save({ session });
 
-    order.status = "Processing";
-    order.paymentStatus = "paid";
-    order.expiresAt = undefined;
-    await order.save();
-    await assignLicenseKeysToOrder(order);
+      const order = await OrderModel.findOne({ orderId }).session(session);
+
+      if (order) {
+        await decrementOrderStockOnce(order, session);
+
+        order.status = ORDER_STATUS.PROCESSING;
+        order.paymentStatus = PAYMENT_STATUS.PAID;
+        order.expiresAt = undefined;
+        await order.save({ session });
+        await markOrderCouponUsedOnce(order, session);
+        await assignLicenseKeysToOrder(order, session);
+
+        if (order.user) {
+          await CartModel.updateOne(
+            { user: order.user },
+            { $set: { items: [] } },
+            { session },
+          );
+        }
+      }
+
+      paidPayment = payment;
+    });
+  } finally {
+    await session.endSession();
   }
 
-  return payment;
+  return paidPayment;
 }

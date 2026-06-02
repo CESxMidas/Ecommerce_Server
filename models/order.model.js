@@ -68,8 +68,16 @@ const orderSchema = new mongoose.Schema(
     userId: { type: String, default: "guest" },
     status: {
       type: String,
-      enum: ["Pending", "Processing", "Delivered", "Cancelled"],
-      default: "Pending",
+      enum: [
+        "PendingPayment",
+        "Processing",
+        "Shipped",
+        "Delivered",
+        "Cancelled",
+        "Failed",
+        "Refunded",
+      ],
+      default: "PendingPayment",
     },
     paymentMethod: { type: String, default: "card" },
     paymentStatus: {
@@ -81,10 +89,19 @@ const orderSchema = new mongoose.Schema(
     subtotal: { type: Number, default: 0 },
     discount: { type: Number, default: 0 },
     couponCode: { type: String, default: "" },
+    couponUsageIncremented: { type: Boolean, default: false },
     tax: { type: Number, default: 0 },
     shippingFee: { type: Number, default: 0 },
     currency: { type: String, default: "USD" },
     stockDeducted: { type: Boolean, default: false },
+    stockRestored: { type: Boolean, default: false },
+    hiddenByUsers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        index: true,
+      },
+    ],
     items: [orderItemSchema],
 
     // 🌟 THÊM TRƯỜNG NÀY ĐỂ KÍCH HOẠT TỰ ĐỘNG XÓA ĐƠN HÀNG

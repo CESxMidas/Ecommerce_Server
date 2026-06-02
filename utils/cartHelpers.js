@@ -23,11 +23,15 @@ export function assertSufficientStock(product, quantity) {
   }
 }
 
-export async function getOrCreateCart(userId) {
-  let cart = await CartModel.findOne({ user: userId });
+export async function getOrCreateCart(userId, session = null) {
+  let cart = await CartModel.findOne({ user: userId }).session(session);
 
   if (!cart) {
-    cart = await CartModel.create({ user: userId, items: [] });
+    const [createdCart] = await CartModel.create(
+      [{ user: userId, items: [] }],
+      { session },
+    );
+    cart = createdCart;
   }
 
   return cart;

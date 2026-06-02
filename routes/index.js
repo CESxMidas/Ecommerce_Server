@@ -13,7 +13,6 @@ import blogRoutes from "./blog.route.js";
 import adminRoutes from "./admin.route.js";
 import adminCouponRoutes from "./admin.coupon.route.js";
 import paymentRoutes from "./payment.route.js";
-import { authRateLimiter } from "../middleware/rateLimit.middleware.js";
 
 const router = Router();
 
@@ -21,7 +20,7 @@ router.get("/health", (request, response) => {
   response.json({ ok: true });
 });
 
-router.use("/auth", authRateLimiter, authRoutes);
+router.use("/auth", authRoutes);
 router.use("/products", productRoutes);
 router.use("/categories", categoryRoutes);
 router.use("/cart", cartRoutes);

@@ -1,7 +1,7 @@
 import CouponModel from "../models/coupon.model.js";
 import { ApiError } from "./apiError.js";
 
-export async function validateCoupon(code, subtotal) {
+export async function validateCoupon(code, subtotal, options = {}) {
   if (!code?.trim()) {
     throw new ApiError(400, "Coupon code is required");
   }
@@ -9,7 +9,7 @@ export async function validateCoupon(code, subtotal) {
   const coupon = await CouponModel.findOne({
     code: code.trim().toUpperCase(),
     isActive: true,
-  });
+  }).session(options.session || null);
 
   if (!coupon) {
     throw new ApiError(404, "Invalid coupon code");
@@ -54,6 +54,61 @@ export async function validateCoupon(code, subtotal) {
   };
 }
 
+function buildUsageLimitFilter(coupon) {
+  const filter = { _id: coupon._id, isActive: true };
+
+  if (coupon.usageLimit != null) {
+    filter.usedCount = { $lt: coupon.usageLimit };
+  }
+
+  return filter;
+}
+
+export async function claimCouponUsage(coupon, session = null) {
+  if (!coupon?._id) {
+    throw new ApiError(400, "Coupon is required");
+  }
+
+  const result = await CouponModel.updateOne(
+    buildUsageLimitFilter(coupon),
+    { $inc: { usedCount: 1 } },
+    { session },
+  );
+
+  if (result.modifiedCount !== 1) {
+    throw new ApiError(400, "Coupon usage limit reached");
+  }
+
+  return result;
+}
+
+export async function claimCouponUsageByCode(code, session = null) {
+  if (!code?.trim()) {
+    return null;
+  }
+
+  const coupon = await CouponModel.findOne({
+    code: code.trim().toUpperCase(),
+    isActive: true,
+  }).session(session);
+
+  if (!coupon) {
+    throw new ApiError(404, "Invalid coupon code");
+  }
+
+  return claimCouponUsage(coupon, session);
+}
+
 export async function incrementCouponUsage(couponId) {
-  await CouponModel.updateOne({ _id: couponId }, { $inc: { usedCount: 1 } });
+  const coupon = await CouponModel.findById(couponId);
+
+  if (!coupon) {
+    throw new ApiError(404, "Invalid coupon code");
+  }
+
+  await claimCouponUsage(coupon);
+}
+
+export async function incrementCouponUsageByCode(code) {
+  return claimCouponUsageByCode(code);
 }

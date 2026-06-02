@@ -1,6 +1,9 @@
+import crypto from "crypto";
+import mongoose from "mongoose";
+
 import OrderModel from "../models/order.model.js";
 import ProductModel from "../models/product.model.js";
-import crypto from "crypto";
+import PaymentModel from "../models/payment.model.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { formatOrder, formatProduct } from "../utils/formatters.js";
 import { ApiError, throwIfInvalid } from "../utils/apiError.js";
@@ -8,17 +11,21 @@ import { validatePlaceOrder } from "../validators/order.validator.js";
 import { assignLicenseKeysToOrder } from "../utils/licenseKey.js";
 import { getSalePriceFromDoc } from "../utils/dataNormalization.js";
 import { resolvePurchaseVariant } from "../utils/productVariants.js";
-import {
-  validateCoupon,
-  incrementCouponUsage,
-} from "../utils/couponHelpers.js";
-
+import { validateCoupon } from "../utils/couponHelpers.js";
 import { createPayment } from "../services/payment.service.js";
 import { getOrCreateCart } from "../utils/cartHelpers.js";
+import {
+  ORDER_STATUS,
+  PAYMENT_STATUS,
+  assertTransitionAllowed,
+  decrementStockForItems,
+  getInitialOrderStatus,
+  markOrderCouponUsedOnce,
+  normalizeOrderStatus,
+  restoreOrderStockOnce,
+  shouldDeductStockImmediately,
+} from "../utils/orderLifecycle.js";
 
-/* ========================= */
-/* ORDER ID */
-/* ========================= */
 function generateOrderId() {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const random = crypto.randomBytes(3).toString("hex").toUpperCase();
@@ -26,9 +33,6 @@ function generateOrderId() {
   return `ORD-${date}-${random}`;
 }
 
-/* ========================= */
-/* TOTAL CALC */
-/* ========================= */
 function computeOrderTotal(subtotal, { tax = 0, shippingFee = 0 } = {}) {
   const normalizedSubtotal = Math.max(0, Number(subtotal) || 0);
   const normalizedTax = Math.max(0, Number(tax) || 0);
@@ -53,10 +57,6 @@ function normalizePaymentMethod(method) {
   return normalized;
 }
 
-function shouldDeductStockImmediately(paymentMethod, paymentStatus) {
-  return paymentMethod === "cod" || paymentStatus === "paid";
-}
-
 function isPhysicalDeliveryItem(item) {
   return (
     item?.product?.deliveryType === "physical" ||
@@ -64,20 +64,14 @@ function isPhysicalDeliveryItem(item) {
   );
 }
 
-/* ========================= */
-/* VALIDATE + FULFILL ITEMS */
-/* ========================= */
-async function validateAndFulfillOrderItems(items = []) {
+async function validateAndFulfillOrderItems(items = [], session = null) {
   const productIds = items.map((item) => Number(item.productId));
-
   const products = await ProductModel.find({
     productId: { $in: productIds },
     isActive: true,
-  });
-
-  const productMap = new Map(products.map((p) => [p.productId, p]));
-
-  const fulfilled = [];
+  }).session(session);
+  const productMap = new Map(products.map((product) => [product.productId, product]));
+  const fulfilledItems = [];
   let subtotal = 0;
 
   for (const item of items) {
@@ -98,8 +92,7 @@ async function validateAndFulfillOrderItems(items = []) {
     const lineTotal = unitPrice * quantity;
 
     subtotal += lineTotal;
-
-    fulfilled.push({
+    fulfilledItems.push({
       productId,
       sku: dbProduct.sku || "",
       quantity,
@@ -112,70 +105,20 @@ async function validateAndFulfillOrderItems(items = []) {
     });
   }
 
-  return { fulfilledItems: fulfilled, subtotal };
+  return { fulfilledItems, subtotal };
 }
 
-/* ========================= */
-/* DECREMENT STOCK */
-/* ========================= */
-async function decrementStockForItems(items = []) {
-  for (const item of items) {
-    const updated = await ProductModel.findOneAndUpdate(
-      {
-        productId: item.productId,
-        stock: { $gte: item.quantity },
-      },
-      { $inc: { stock: -item.quantity } },
-      { new: true },
-    );
-
-    if (!updated) {
-      throw new ApiError(400, `Stock failed for product ${item.productId}`);
-    }
-  }
-}
-
-export async function decrementOrderStockOnce(order) {
-  if (!order || order.stockDeducted) {
-    return order;
-  }
-
-  await decrementStockForItems(order.items || []);
-
-  order.stockDeducted = true;
-  await order.save();
-
-  return order;
-}
-
-/* ========================= */
-/* RESTORE STOCK */
-/* ========================= */
-async function restoreStockForItems(items = []) {
-  await Promise.all(
-    items.map((item) =>
-      ProductModel.updateOne(
-        { productId: item.productId },
-        { $inc: { stock: item.quantity } },
-      ),
-    ),
-  );
-}
-
-/* ========================= */
-/* GET ORDERS (CÓ SỬA ĐỔI) */
-/* ========================= */
 export const getOrders = asyncHandler(async (req, res) => {
   const filter = { email: req.user.email };
 
   if (req.user.role === "ADMIN" && req.query.all === "true") {
     delete filter.email;
   } else {
-    // 🌟 SỬA TẠI ĐÂY: Nếu là khách hàng xem đơn, loại bỏ các đơn có trạng thái "failed"
-    // hoặc các đơn đã quá thời gian expiresAt nhưng MongoDB chưa kịp chạy ngầm để xóa.
+    filter.hiddenByUsers = { $ne: req.user._id };
     filter.$or = [
       { expiresAt: { $exists: false } },
       { expiresAt: { $gt: new Date() } },
+      { status: { $in: [ORDER_STATUS.FAILED, ORDER_STATUS.CANCELLED] } },
     ];
   }
 
@@ -184,9 +127,6 @@ export const getOrders = asyncHandler(async (req, res) => {
   res.json(orders.map(formatOrder));
 });
 
-/* ========================= */
-/* GET ORDER BY ID */
-/* ========================= */
 export const getOrderById = asyncHandler(async (req, res) => {
   const order = await OrderModel.findOne({ orderId: req.params.id });
 
@@ -197,6 +137,23 @@ export const getOrderById = asyncHandler(async (req, res) => {
   }
 
   res.json(formatOrder(order));
+});
+
+export const hideOrder = asyncHandler(async (req, res) => {
+  const order = await OrderModel.findOneAndUpdate(
+    {
+      orderId: req.params.id,
+      email: req.user.email,
+    },
+    {
+      $addToSet: { hiddenByUsers: req.user._id },
+    },
+    { new: true },
+  );
+
+  if (!order) throw new ApiError(404, "Order not found");
+
+  res.json({ message: "Order removed from your history" });
 });
 
 export const trackOrder = asyncHandler(async (req, res) => {
@@ -221,11 +178,9 @@ export const trackOrder = asyncHandler(async (req, res) => {
   res.json(formatOrder(order));
 });
 
-/* ========================= */
-/* CREATE ORDER (CÓ SỬA ĐỔI) */
-/* ========================= */
 export const createOrder = asyncHandler(async (req, res) => {
   throwIfInvalid(validatePlaceOrder(req.body));
+
   const {
     name,
     phone,
@@ -241,153 +196,207 @@ export const createOrder = asyncHandler(async (req, res) => {
     currency = "USD",
   } = req.body;
   const normalizedPaymentMethod = normalizePaymentMethod(paymentMethod);
-
-  /* 1. validate items */
-  const { fulfilledItems, subtotal: itemsSubtotal } =
-    await validateAndFulfillOrderItems(items);
-
-  const allItemsAllowCod = fulfilledItems.every(isPhysicalDeliveryItem);
-
-  if (!allItemsAllowCod && normalizedPaymentMethod === "cod") {
-    throw new ApiError(
-      400,
-      "COD is only available for physical products",
-    );
-  }
-
-  /* 2. coupon */
-  let discount = 0;
-  let appliedCouponCode = "";
-  let discountedSubtotal = itemsSubtotal;
-  let couponDoc = null;
-
-  if (couponCode?.trim()) {
-    const couponResult = await validateCoupon(couponCode, itemsSubtotal);
-
-    discount = couponResult.discount;
-    discountedSubtotal = couponResult.total;
-    appliedCouponCode = couponResult.coupon.code;
-    couponDoc = couponResult.coupon;
-  }
-
-  /* 3. total */
-  const totals = computeOrderTotal(discountedSubtotal, { tax, shippingFee });
-
-  const orderId = generateOrderId();
-
-  /* 4. PAYMENT (FIXED: ONLY ONE SYSTEM) */
-  const paymentSession = await createPayment({
-    orderId,
-    amount: totals.total,
-    provider: normalizedPaymentMethod,
-  });
-
+  const session = await mongoose.startSession();
   let order;
 
   try {
-    // 🌟 SỬA TẠI ĐÂY: Nếu phương thức thanh toán online (vnpay, stripe...) thì set hạn sống 5 phút.
-    // Nếu chọn giao hàng COD, không cần đặt trường expiresAt (đơn sống vĩnh viễn).
-    const expiresAtValue =
-      paymentSession.paymentStatus !== "paid" &&
-      normalizedPaymentMethod !== "cod"
-        ? new Date(Date.now() + 5 * 60 * 1000)
-        : undefined;
-    const stockDeducted = shouldDeductStockImmediately(
-      normalizedPaymentMethod,
-      paymentSession.paymentStatus,
-    );
+    await session.withTransaction(async () => {
+      const { fulfilledItems, subtotal: itemsSubtotal } =
+        await validateAndFulfillOrderItems(items, session);
 
-    if (stockDeducted) {
-      await decrementStockForItems(fulfilledItems);
-    }
+      const allItemsAllowCod = fulfilledItems.every(isPhysicalDeliveryItem);
 
-    order = await OrderModel.create({
-      orderId,
+      if (!allItemsAllowCod && normalizedPaymentMethod === "cod") {
+        throw new ApiError(400, "COD is only available for physical products");
+      }
 
-      paymentId: paymentSession.paymentId,
-      paymentStatus: paymentSession.paymentStatus,
-      paymentUrl: paymentSession.paymentUrl || "",
+      let discount = 0;
+      let appliedCouponCode = "";
+      let discountedSubtotal = itemsSubtotal;
 
-      user: req.user?._id || null,
+      if (couponCode?.trim()) {
+        const couponResult = await validateCoupon(couponCode, itemsSubtotal, {
+          session,
+        });
 
-      name: name.trim(),
-      phone: phone.trim(),
-      address: address.trim(),
-      pincode: String(pincode),
+        discount = couponResult.discount;
+        discountedSubtotal = couponResult.total;
+        appliedCouponCode = couponResult.coupon.code;
+      }
 
-      subtotal: itemsSubtotal,
-      discount,
-      couponCode: appliedCouponCode,
-      tax: totals.tax,
-      shippingFee: totals.shippingFee,
-      currency: String(currency || "USD").trim().toUpperCase(),
-      total: totals.total,
-
-      email: (req.user?.email || email).trim().toLowerCase(),
-      userId: userId || req.user?.email,
-
-      status: paymentSession.paymentStatus === "paid" ? "Processing" : "Pending",
-      paymentMethod: normalizedPaymentMethod,
-
-      items: fulfilledItems,
-      stockDeducted,
-      expiresAt: expiresAtValue, // Gán giá trị giới hạn thời gian vào đây
-    });
-
-    if (paymentSession.paymentStatus === "paid") {
-      order = await assignLicenseKeysToOrder(order);
-    }
-
-    if (couponDoc) {
-      await incrementCouponUsage(couponDoc._id);
-    }
-  } catch (err) {
-    if (
-      shouldDeductStockImmediately(
+      const totals = computeOrderTotal(discountedSubtotal, { tax, shippingFee });
+      const orderId = generateOrderId();
+      const paymentSession = await createPayment({
+        orderId,
+        amount: totals.total,
+        provider: normalizedPaymentMethod,
+        clientIp: req.ip,
+        session,
+      });
+      const expiresAtValue =
+        paymentSession.paymentStatus !== PAYMENT_STATUS.PAID &&
+        normalizedPaymentMethod !== "cod"
+          ? new Date(Date.now() + 5 * 60 * 1000)
+          : undefined;
+      const stockDeducted = shouldDeductStockImmediately(
         normalizedPaymentMethod,
         paymentSession.paymentStatus,
-      )
-    ) {
-      await restoreStockForItems(fulfilledItems);
-    }
-    throw err;
+      );
+
+      if (stockDeducted) {
+        await decrementStockForItems(fulfilledItems, session);
+      }
+
+      const [createdOrder] = await OrderModel.create(
+        [
+          {
+            orderId,
+            paymentId: paymentSession.paymentId,
+            paymentStatus: paymentSession.paymentStatus,
+            paymentUrl: paymentSession.paymentUrl || "",
+            user: req.user?._id || null,
+            name: name.trim(),
+            phone: phone.trim(),
+            address: address.trim(),
+            pincode: String(pincode),
+            subtotal: itemsSubtotal,
+            discount,
+            couponCode: appliedCouponCode,
+            tax: totals.tax,
+            shippingFee: totals.shippingFee,
+            currency: String(currency || "USD").trim().toUpperCase(),
+            total: totals.total,
+            email: (req.user?.email || email).trim().toLowerCase(),
+            userId: userId || req.user?.email,
+            status: getInitialOrderStatus(
+              normalizedPaymentMethod,
+              paymentSession.paymentStatus,
+            ),
+            paymentMethod: normalizedPaymentMethod,
+            items: fulfilledItems,
+            stockDeducted,
+            stockRestored: false,
+            expiresAt: expiresAtValue,
+          },
+        ],
+        { session },
+      );
+
+      order = createdOrder;
+
+      if (paymentSession.paymentStatus === PAYMENT_STATUS.PAID) {
+        order = await assignLicenseKeysToOrder(order, session);
+      }
+
+      if (stockDeducted && appliedCouponCode) {
+        order = await markOrderCouponUsedOnce(order, session);
+      }
+
+      if (normalizedPaymentMethod === "cod" && req.user?._id) {
+        const cart = await getOrCreateCart(req.user._id, session);
+        cart.items = [];
+        await cart.save({ session });
+      }
+    });
+  } finally {
+    await session.endSession();
   }
 
-  /* 6. CLEAR CART (CÓ SỬA ĐỔI) */
-  // 🌟 SỬA TẠI ĐÂY: Chỉ xóa sạch giỏ hàng ngay lập tức nếu chọn phương thức giao hàng COD.
-  // Đối với thanh toán Online, không xóa ở đây, đợi Frontend kiểm tra thanh toán thành công mới xóa.
-  if (normalizedPaymentMethod === "cod" && req.user?._id) {
-    const cart = await getOrCreateCart(req.user._id);
-    cart.items = [];
-    await cart.save();
-  }
-
-  /* 7. response */
   res.status(201).json({
     ...formatOrder(order),
     paymentUrl: order.paymentUrl || null,
   });
 });
 
-/* ========================= */
-/* UPDATE STATUS */
-/* ========================= */
 export const updateOrderStatus = asyncHandler(async (req, res) => {
-  const { status } = req.body;
+  const nextStatus = normalizeOrderStatus(req.body.status);
+  const session = await mongoose.startSession();
+  let order;
 
-  const allowed = ["Pending", "Processing", "Delivered", "Cancelled"];
+  try {
+    await session.withTransaction(async () => {
+      order = await OrderModel.findOne({ orderId: req.params.id }).session(session);
 
-  if (!allowed.includes(status)) {
-    throw new ApiError(400, "Invalid status");
+      if (!order) throw new ApiError(404, "Order not found");
+
+      assertTransitionAllowed(order.status, nextStatus, true);
+      order.status = nextStatus;
+
+      if ([ORDER_STATUS.CANCELLED, ORDER_STATUS.FAILED].includes(nextStatus)) {
+        await restoreOrderStockOnce(order, session);
+        order.paymentStatus =
+          nextStatus === ORDER_STATUS.CANCELLED && order.paymentStatus === PAYMENT_STATUS.PAID
+            ? PAYMENT_STATUS.REFUNDED
+            : PAYMENT_STATUS.FAILED;
+      }
+
+      if (nextStatus === ORDER_STATUS.REFUNDED) {
+        await restoreOrderStockOnce(order, session);
+        order.paymentStatus = PAYMENT_STATUS.REFUNDED;
+      }
+
+      await order.save({ session });
+
+      await PaymentModel.updateOne(
+        { orderId: order.orderId },
+        { status: order.paymentStatus },
+        { session },
+      );
+    });
+  } finally {
+    await session.endSession();
   }
 
-  const order = await OrderModel.findOneAndUpdate(
-    { orderId: req.params.id },
-    { status },
-    { new: true },
-  );
+  res.json(formatOrder(order));
+});
 
-  if (!order) throw new ApiError(404, "Order not found");
+export const cancelOrder = asyncHandler(async (req, res) => {
+  const session = await mongoose.startSession();
+  let order;
+
+  try {
+    await session.withTransaction(async () => {
+      order = await OrderModel.findOne({
+        orderId: req.params.id,
+        email: req.user.email,
+      }).session(session);
+
+      if (!order) throw new ApiError(404, "Order not found");
+
+      assertTransitionAllowed(order.status, ORDER_STATUS.CANCELLED, false);
+
+      if (
+        order.paymentStatus === PAYMENT_STATUS.PAID &&
+        (order.items || []).some((item) => item.licenseKeys?.length)
+      ) {
+        throw new ApiError(
+          400,
+          "Digital items already delivered cannot be cancelled",
+        );
+      }
+
+      await restoreOrderStockOnce(order, session);
+
+      order.status = ORDER_STATUS.CANCELLED;
+      order.paymentStatus =
+        order.paymentStatus === PAYMENT_STATUS.PAID
+          ? PAYMENT_STATUS.REFUNDED
+          : PAYMENT_STATUS.FAILED;
+      order.expiresAt = undefined;
+      await order.save({ session });
+
+      await PaymentModel.updateOne(
+        { orderId: order.orderId },
+        {
+          status: order.paymentStatus,
+          expiresAt: undefined,
+        },
+        { session },
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
 
   res.json(formatOrder(order));
 });

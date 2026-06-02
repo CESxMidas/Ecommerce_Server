@@ -262,6 +262,7 @@ export function formatReview(review) {
     userName: doc.userName,
     rating: doc.rating,
     comment: doc.comment,
+    verifiedPurchase: Boolean(doc.verifiedPurchase),
     createdAt: doc.createdAt,
   };
 }
