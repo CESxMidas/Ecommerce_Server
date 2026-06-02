@@ -10,6 +10,7 @@ import {
   PAYMENT_STATUS,
   decrementOrderStockOnce,
   markOrderCouponUsedOnce,
+  markPaymentFailed,
 } from "../utils/orderLifecycle.js";
 
 function resolveInitialPaymentStatus(provider) {
@@ -83,31 +84,52 @@ export async function markPaymentPaid({ orderId, transactionId, raw }) {
         return;
       }
 
+      const order = await OrderModel.findOne({ orderId }).session(session);
+
+      if (!order) {
+        paidPayment = null;
+        return;
+      }
+
+      if (
+        [ORDER_STATUS.CANCELLED, ORDER_STATUS.FAILED, ORDER_STATUS.REFUNDED].includes(
+          order.status,
+        ) ||
+        [PAYMENT_STATUS.FAILED, PAYMENT_STATUS.REFUNDED].includes(
+          order.paymentStatus,
+        )
+      ) {
+        paidPayment = null;
+        return;
+      }
+
+      if (order.expiresAt && order.expiresAt <= new Date()) {
+        await markPaymentFailed(order, { reason: "payment_window_expired" }, session);
+        paidPayment = null;
+        return;
+      }
+
       payment.status = PAYMENT_STATUS.PAID;
       payment.transactionId = transactionId || "";
       payment.rawResponse = raw || {};
       payment.expiresAt = undefined;
       await payment.save({ session });
 
-      const order = await OrderModel.findOne({ orderId }).session(session);
+      await decrementOrderStockOnce(order, session);
 
-      if (order) {
-        await decrementOrderStockOnce(order, session);
+      order.status = ORDER_STATUS.PROCESSING;
+      order.paymentStatus = PAYMENT_STATUS.PAID;
+      order.expiresAt = undefined;
+      await order.save({ session });
+      await markOrderCouponUsedOnce(order, session);
+      await assignLicenseKeysToOrder(order, session);
 
-        order.status = ORDER_STATUS.PROCESSING;
-        order.paymentStatus = PAYMENT_STATUS.PAID;
-        order.expiresAt = undefined;
-        await order.save({ session });
-        await markOrderCouponUsedOnce(order, session);
-        await assignLicenseKeysToOrder(order, session);
-
-        if (order.user) {
-          await CartModel.updateOne(
-            { user: order.user },
-            { $set: { items: [] } },
-            { session },
-          );
-        }
+      if (order.user) {
+        await CartModel.updateOne(
+          { user: order.user },
+          { $set: { items: [] } },
+          { session },
+        );
       }
 
       paidPayment = payment;

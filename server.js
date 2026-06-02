@@ -6,8 +6,10 @@ import morgan from "morgan";
 import helmet from "helmet";
 
 import { connectDatabase } from "./config/database.js";
+import { ensureOrderIndexes } from "./models/order.model.js";
 import { verifyEmailConnection } from "./utils/email.js";
 import { getGoogleClientIds } from "./utils/googleAuth.js";
+import { expireStalePendingOrders } from "./utils/orderLifecycle.js";
 import apiRoutes from "./routes/index.js";
 import { errorHandler, notFound } from "./middleware/error.middleware.js";
 import { apiRateLimiter } from "./middleware/rateLimit.middleware.js";
@@ -51,6 +53,8 @@ app.use(errorHandler);
 
 async function startServer() {
   await connectDatabase();
+  await ensureOrderIndexes();
+  await expireStalePendingOrders();
   await verifyEmailConnection();
 
   const googleIds = getGoogleClientIds();
@@ -64,6 +68,12 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
+
+  setInterval(() => {
+    expireStalePendingOrders().catch((error) => {
+      console.error("Failed to expire pending orders:", error);
+    });
+  }, 60 * 1000);
 }
 
 startServer().catch((error) => {

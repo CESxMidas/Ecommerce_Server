@@ -5,10 +5,15 @@ import {
   ORDER_STATUS,
   assertTransitionAllowed,
   getInitialOrderStatus,
+  shouldDeductStockImmediately,
 } from "../utils/orderLifecycle.js";
 
 test("order status machine starts VNPay orders in PendingPayment", () => {
   assert.equal(getInitialOrderStatus("vnpay", "pending"), "PendingPayment");
+});
+
+test("VNPay pending orders reserve stock immediately", () => {
+  assert.equal(shouldDeductStockImmediately("vnpay", "pending"), true);
 });
 
 test("order status machine starts COD orders in Processing", () => {

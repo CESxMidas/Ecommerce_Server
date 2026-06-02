@@ -19,10 +19,12 @@ import {
   PAYMENT_STATUS,
   assertTransitionAllowed,
   decrementStockForItems,
+  expireStalePendingOrders,
   getInitialOrderStatus,
   markOrderCouponUsedOnce,
   normalizeOrderStatus,
   restoreOrderStockOnce,
+  shouldClaimCouponImmediately,
   shouldDeductStockImmediately,
 } from "../utils/orderLifecycle.js";
 
@@ -109,6 +111,8 @@ async function validateAndFulfillOrderItems(items = [], session = null) {
 }
 
 export const getOrders = asyncHandler(async (req, res) => {
+  await expireStalePendingOrders();
+
   const filter = { email: req.user.email };
 
   if (req.user.role === "ADMIN" && req.query.all === "true") {
@@ -180,6 +184,7 @@ export const trackOrder = asyncHandler(async (req, res) => {
 
 export const createOrder = asyncHandler(async (req, res) => {
   throwIfInvalid(validatePlaceOrder(req.body));
+  await expireStalePendingOrders();
 
   const {
     name,
@@ -288,7 +293,14 @@ export const createOrder = asyncHandler(async (req, res) => {
         order = await assignLicenseKeysToOrder(order, session);
       }
 
-      if (stockDeducted && appliedCouponCode) {
+      if (
+        stockDeducted &&
+        appliedCouponCode &&
+        shouldClaimCouponImmediately(
+          normalizedPaymentMethod,
+          paymentSession.paymentStatus,
+        )
+      ) {
         order = await markOrderCouponUsedOnce(order, session);
       }
 

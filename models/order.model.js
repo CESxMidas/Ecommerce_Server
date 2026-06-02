@@ -107,12 +107,36 @@ const orderSchema = new mongoose.Schema(
     // 🌟 THÊM TRƯỜNG NÀY ĐỂ KÍCH HOẠT TỰ ĐỘNG XÓA ĐƠN HÀNG
     expiresAt: {
       type: Date,
-      index: { expires: 0 },
+      index: true,
     },
   },
   { timestamps: true },
 );
 
 const OrderModel = mongoose.model("Order", orderSchema);
+
+export async function ensureOrderIndexes() {
+  let indexes = [];
+
+  try {
+    indexes = await OrderModel.collection.indexes();
+  } catch (error) {
+    if (error?.codeName !== "NamespaceNotFound") {
+      throw error;
+    }
+  }
+
+  const ttlExpiresAtIndex = indexes.find(
+    (index) =>
+      index.name === "expiresAt_1" &&
+      Object.prototype.hasOwnProperty.call(index, "expireAfterSeconds"),
+  );
+
+  if (ttlExpiresAtIndex) {
+    await OrderModel.collection.dropIndex("expiresAt_1");
+  }
+
+  await OrderModel.collection.createIndex({ expiresAt: 1 }, { name: "expiresAt_1" });
+}
 
 export default OrderModel;

@@ -42,11 +42,15 @@ export const vnpayReturn = asyncHandler(async (req, res) => {
   }
 
   if (query.vnp_ResponseCode === "00") {
-    await markPaymentPaid({
+    const payment = await markPaymentPaid({
       orderId: order.orderId,
       transactionId: query.vnp_TransactionNo,
       raw: query,
     });
+
+    if (!payment) {
+      return res.redirect(getOrderRedirect(order, "failed"));
+    }
 
     return res.redirect(getOrderRedirect(order, "success"));
   }
@@ -77,6 +81,8 @@ export const vnpayIpn = asyncHandler(async (req, res) => {
   }
 
   if (Number(query.vnp_Amount) !== toVnpayAmount(order.total)) {
+    await markPaymentFailed(order, query);
+
     return res.status(200).json({
       RspCode: "04",
       Message: "Invalid amount",
@@ -91,11 +97,18 @@ export const vnpayIpn = asyncHandler(async (req, res) => {
   }
 
   if (query.vnp_ResponseCode === "00") {
-    await markPaymentPaid({
+    const payment = await markPaymentPaid({
       orderId: order.orderId,
       transactionId: query.vnp_TransactionNo,
       raw: query,
     });
+
+    if (!payment) {
+      return res.status(200).json({
+        RspCode: "02",
+        Message: "Order cannot be confirmed",
+      });
+    }
 
     return res.status(200).json({
       RspCode: "00",
@@ -131,6 +144,8 @@ export const reCreatePaymentUrl = asyncHandler(async (req, res) => {
   }
 
   if (order.expiresAt && order.expiresAt <= new Date()) {
+    await markPaymentFailed(order, { reason: "payment_window_expired" });
+
     throw new ApiError(410, "Payment window has expired");
   }
 

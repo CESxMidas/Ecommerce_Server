@@ -1,5 +1,6 @@
 import ProductModel from "../models/product.model.js";
 import PaymentModel from "../models/payment.model.js";
+import OrderModel from "../models/order.model.js";
 import { ApiError } from "./apiError.js";
 import { claimCouponUsageByCode } from "./couponHelpers.js";
 
@@ -67,6 +68,14 @@ export function getInitialOrderStatus(paymentMethod, paymentStatus) {
 }
 
 export function shouldDeductStockImmediately(paymentMethod, paymentStatus) {
+  return (
+    paymentMethod === "cod" ||
+    paymentMethod === "vnpay" ||
+    paymentStatus === PAYMENT_STATUS.PAID
+  );
+}
+
+export function shouldClaimCouponImmediately(paymentMethod, paymentStatus) {
   return paymentMethod === "cod" || paymentStatus === PAYMENT_STATUS.PAID;
 }
 
@@ -168,6 +177,12 @@ export async function markOrderCouponUsedOnce(order, session = null) {
 }
 
 export async function markPaymentFailed(order, rawResponse, session = null) {
+  if (!order || order.paymentStatus === PAYMENT_STATUS.PAID) {
+    return order;
+  }
+
+  await restoreOrderStockOnce(order, session);
+
   order.status = ORDER_STATUS.FAILED;
   order.paymentStatus = PAYMENT_STATUS.FAILED;
   order.expiresAt = undefined;
@@ -184,4 +199,19 @@ export async function markPaymentFailed(order, rawResponse, session = null) {
   );
 
   return order;
+}
+
+export async function expireStalePendingOrders({ limit = 100 } = {}) {
+  const expiredOrders = await OrderModel.find({
+    paymentMethod: "vnpay",
+    paymentStatus: PAYMENT_STATUS.PENDING,
+    status: ORDER_STATUS.PENDING_PAYMENT,
+    expiresAt: { $lte: new Date() },
+  }).limit(limit);
+
+  for (const order of expiredOrders) {
+    await markPaymentFailed(order, { reason: "payment_window_expired" });
+  }
+
+  return expiredOrders.length;
 }

@@ -8,6 +8,49 @@ import { ApiError, throwIfInvalid } from "../utils/apiError.js";
 import { getCategoryIdsWithDescendants } from "../utils/categoryHelpers.js";
 import { syncProductReviewStats } from "../utils/reviewHelpers.js";
 import { validateProductPayload } from "../validators/schema.validator.js";
+import { getNextSequence } from "../utils/sequence.js";
+
+const PRODUCT_SEQUENCE = "productId";
+const PRODUCT_WRITABLE_FIELDS = new Set([
+  "name",
+  "slug",
+  "description",
+  "sku",
+  "price",
+  "discountPrice",
+  "currency",
+  "images",
+  "thumbnail",
+  "categoryId",
+  "categoryName",
+  "vendor",
+  "tags",
+  "attributes",
+  "variants",
+  "stock",
+  "rating",
+  "reviewsCount",
+  "badge",
+  "productType",
+  "deliveryType",
+  "requiresOnlinePayment",
+  "keyPrefix",
+  "weight",
+  "dimensions",
+  "seoTitle",
+  "seoDescription",
+  "isActive",
+]);
+
+function pickProductPayload(body = {}) {
+  return Object.entries(body).reduce((payload, [key, value]) => {
+    if (PRODUCT_WRITABLE_FIELDS.has(key) && !key.startsWith("$")) {
+      payload[key] = value;
+    }
+
+    return payload;
+  }, {});
+}
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -212,12 +255,18 @@ export const getProductById = asyncHandler(async (request, response) => {
 export const createProduct = asyncHandler(async (request, response) => {
   throwIfInvalid(validateProductPayload(request.body));
 
-  const lastProduct = await ProductModel.findOne().sort({ productId: -1 });
-  const nextId = (lastProduct?.productId || 0) + 1;
+  const payload = pickProductPayload(request.body);
+  const lastProduct = await ProductModel.findOne()
+    .sort({ productId: -1 })
+    .select("productId");
+  const nextId = await getNextSequence(
+    PRODUCT_SEQUENCE,
+    lastProduct?.productId || 0,
+  );
 
   const product = await ProductModel.create({
+    ...payload,
     productId: nextId,
-    ...request.body,
   });
 
   response.status(201).json(formatProduct(product));
@@ -227,10 +276,15 @@ export const updateProduct = asyncHandler(async (request, response) => {
   throwIfInvalid(validateProductPayload(request.body, { partial: true }));
 
   const productId = Number(request.params.id);
+  const payload = pickProductPayload(request.body);
+
+  if (Object.keys(payload).length === 0) {
+    throw new ApiError(400, "No valid product fields to update");
+  }
 
   const product = await ProductModel.findOneAndUpdate(
     { productId },
-    request.body,
+    { $set: payload },
     { new: true, runValidators: true },
   );
 
